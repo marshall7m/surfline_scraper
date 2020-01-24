@@ -9,7 +9,7 @@ class surfline_spot_scraper():
         import re
         from datetime import datetime
 
-        """Returns feature_name parameter's respective data using BeautifulSoup scraping package. Try/excepts statements 
+        """Returns surf spot's respective numerical data using BeautifulSoup scraping tools. Try/excepts statements 
         are used in case page html changes. If page html changes then None value is returned and diagnostic message is
         printed. 
         
@@ -41,8 +41,13 @@ class surfline_spot_scraper():
                 try:
                     flat_surf = self.page_html.find('div', class_='quiver-spot-forecast-summary__stat-container quiver-spot-forecast-summary__stat-container--surf-height quiver-spot-forecast-summary__stat-container--surf-height--expired').find('span', class_='quiver-surf-height quiver-surf-height--flat').text
                 except AttributeError:
-                    print('Update html: ', feature_name)
-                    return None
+                    try:
+                        expired_surf_height = self.page_html.find('div', class_='quiver-spot-forecast-summary__stat-container quiver-spot-forecast-summary__stat-container--surf-height quiver-spot-forecast-summary__stat-container--surf-height--expired').find(class_='quiver-surf-height').text
+                    except AttributeError:
+                        print('Update html: ', feature_name)
+                        return None
+                    else:
+                        return 'expired'
                 else:
                     return 0.0
             else:
@@ -54,7 +59,9 @@ class surfline_spot_scraper():
 
         elif feature_name=='swell':
             try:
-                raw_swell = self.page_html.find('div', class_='quiver-condition-stats__swells').contents[content_idx].text
+                raw_ft = self.page_html.find_all('span', class_='quiver-swell-measurements__units')[content_idx].previous_element
+                raw_secs = self.page_html.find_all('span', class_='quiver-swell-measurements__units')[content_idx].next_element.next_element
+                raw_degrees = self.page_html.find_all('span', class_='quiver-swell-measurements__direction')[content_idx].text
             except AttributeError:
                 swell_ft = None
                 swell_secs = None
@@ -65,10 +72,9 @@ class surfline_spot_scraper():
                 swell_secs = 0
                 swell_degrees = 0
             else:
-                swell = list(map(float, re.findall(r'\d+\.\d+|\d+', raw_swell)))
-                swell_ft = swell[0]
-                swell_secs = swell[1]
-                swell_degrees = swell[2]
+                swell_ft = float(re.findall(r'\d+\.\d+|\d+', raw_ft)[0])
+                swell_secs = int(re.findall(r'\d+', raw_secs)[0])
+                swell_degrees = int(re.findall(r'\d+', raw_degrees)[0])
             return swell_ft, swell_secs, swell_degrees
 
         elif feature_name=='current tide':
@@ -78,15 +84,15 @@ class surfline_spot_scraper():
                 print('Update html: ', feature_name)
                 return None
             else:
-                return float(re.findall(r'\d+', tide)[0])
+                return float(re.findall(r'\d+\.\d+|\d+', tide)[0])
 
         elif feature_name=='local extrema tide':
             try:
                 local_extrema_tide = self.page_html.find_all('span', class_='quiver-reading-description')[1].text
-            except AttributeError:
+            except (AttributeError,IndexError) as e:
                 local_extrema_tide_ft = None
                 local_extrema_tide_time = None
-                print('Update html: ', feature_name)
+                print('Update html for: {} ... Error: {}', feature_name, e)
             else:
                 local_extrema_tide_ft = float(re.findall(r'-?\d+\.\d+(?=\s?ft)|-?\d+(?=\s?ft)', local_extrema_tide)[0])
                 local_extrema_tide_time = datetime.strptime(re.findall(r'\d+:\d+[pa]m', local_extrema_tide)[0], '%I:%M%p')
@@ -154,13 +160,16 @@ class surfline_spot_scraper():
         else:
             return 'feature_name options: '
 
-    def spot_dict(self):
+    def spot_dict(self, surf_spot):
         from datetime import datetime
         import time
+        import os
+        import csv
+
         """Returns surf spot dictionary"""
 
         swell_one_ft, swell_one_secs, swell_one_degrees = self.fetch('swell', content_idx=0)
-        swell_two_ft, swell_two_secs, swell_two_degrees = self.fetch('swell', content_idx=1)
+        swell_two_ft, swell_two_secs, swell_two_degrees = self.fetch('swell', content_idx=3)
         swell_three_ft, swell_three_secs, swell_three_degrees = self.fetch('swell', content_idx=2)
         
         local_extrema_tide_ft, local_extrema_tide_time = self.fetch('local extrema tide')
@@ -194,13 +203,28 @@ class surfline_spot_scraper():
             'last_light': last_light,
             'description': self.fetch('description')
             }
-        return spot_dict
+        
+        #filename for csv file
+        spot_dir = 'data/'+surf_spot+'.csv'
+
+        #append dictionary to respective spot csv file
+        if os.path.isfile(spot_dir):
+            with open(spot_dir, 'a') as f:
+                w = csv.DictWriter(f, spot_dict.keys())
+                w.writerow(spot_dict)
+        else:
+            #init csv file with column header
+            with open(spot_dir, 'w') as f:
+                w = csv.DictWriter(f, spot_dict.keys())
+                w.writeheader()
+                w.writerow(spot_dict)
 
     def cam_screenshot(self, surf_spot):
         from selenium import webdriver
         import time
         from datetime import datetime
         from bs4 import BeautifulSoup
+        import sys
         
         #init cursor location on chart header above surf cam video
         element = self.driver.find_elements_by_xpath('//div[@class="sl-forecast-header__nav__page-level__link__text"]')[2]
@@ -212,31 +236,48 @@ class surfline_spot_scraper():
         #start surf cam video
         action.click()
         action.perform()
+        print('\tStarting Ad #1')
         #play/pause/stop button on the botton right corner of surf cam
-        ad_button = self.page_html.find('div', class_="jw-icon jw-icon-inline jw-button-color jw-reset jw-icon-playback")['aria-label']
+        try:
+            ad_button = self.page_html.find('div', class_="jw-icon jw-icon-inline jw-button-color jw-reset jw-icon-playback")['aria-label']
+        except TypeError:
+            self.driver.quit()
+            sys.exit('Update ad button html')
 
         #Check for when the advertisement stops
         while ad_button != 'Stop':
             time.sleep(10)
             ad_button = BeautifulSoup(self.driver.page_source, 'html.parser').find('div', class_="jw-icon jw-icon-inline jw-button-color jw-reset jw-icon-playback")['aria-label']
         
+        print('\tFullscreen surf cam')
         #full screen the surf cam
         action.double_click()
         action.perform()
         
-        #reinitiate ad button variable
-        ad_button = BeautifulSoup(self.driver.page_source, 'html.parser').find('div', class_="jw-icon jw-icon-inline jw-button-color jw-reset jw-icon-playback")['aria-label']
-        
-        #Check for when the advertisement #2 stops
-        while ad_button != 'Stop':
-            time.sleep(10)
-            ad_button = BeautifulSoup(self.driver.page_source, 'html.parser').find('div', class_="jw-icon jw-icon-inline jw-button-color jw-reset jw-icon-playback")['aria-label']
-        time.sleep(4)
-        
         #get datetime used for labeling screenshot filename
         screenshot_datetime = datetime.now()
+        print('\tScreenshot Captured')
 
         #save surf cam screen shot to respective surf spot screenshot dir
         self.driver.save_screenshot('screenshots/{}/{}{}{}_{}_{}.png'.format(surf_spot, screenshot_datetime.year, screenshot_datetime.month, 
                                                         screenshot_datetime.day, screenshot_datetime.hour, 
                                                         screenshot_datetime.minute))
+
+        # #reinitiate ad button variable
+        # ad_button = BeautifulSoup(self.driver.page_source, 'html.parser').find('div', class_="jw-icon jw-icon-inline jw-button-color jw-reset jw-icon-playback")['aria-label']
+        
+        # #Check for when the advertisement #2 stops
+        # print('\tChecking for Ad #2')
+        # while ad_button != 'Stop':
+        #     time.sleep(10)
+        #     ad_button = BeautifulSoup(self.driver.page_source, 'html.parser').find('div', class_="jw-icon jw-icon-inline jw-button-color jw-reset jw-icon-playback")['aria-label']
+        # time.sleep(4)
+        
+        # #get datetime used for labeling screenshot filename
+        # screenshot_datetime = datetime.now()
+        # print('\tScreenshot Captured')
+
+        # #save surf cam screen shot to respective surf spot screenshot dir
+        # self.driver.save_screenshot('screenshots/{}/{}{}{}_{}_{}.png'.format(surf_spot, screenshot_datetime.year, screenshot_datetime.month, 
+        #                                                 screenshot_datetime.day, screenshot_datetime.hour, 
+        #                                                 screenshot_datetime.minute))
